@@ -1,0 +1,27 @@
+[package]
+name = "badged"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82.0"
+license = "MIT"
+description = "A polkit authentication agent for Linux window managers"
+authors = ["Jose Fernandez <me@jrfernandez.com>"]
+repository = "https://github.com/jfernandez/badged"
+homepage = "https://github.com/jfernandez/badged"
+documentation = "https://github.com/jfernandez/badged"
+keywords = ["polkit", "authentication", "gtk4", "fingerprint", "linux"]
+categories = ["authentication", "gui"]
+
+[dependencies]
+# D-Bus communication (C libdbus bindings)
+dbus = "0.9"
+
+# GTK4 for UI
+gtk4 = { version = "0.9", default-features = false, features = ["v4_6"] }
+
+# Error handling
+anyhow = "1"
+
+[profile.release]
+lto = true
+strip = true
