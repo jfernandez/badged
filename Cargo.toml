@@ -13,14 +13,9 @@ keywords = ["polkit", "authentication", "gtk4", "fingerprint", "linux"]
 categories = ["authentication", "gui"]
 
 [dependencies]
-# D-Bus communication (C libdbus bindings)
-dbus = "0.9"
-
-# GTK4 for UI
-gtk4 = { version = "0.9", default-features = false, features = ["v4_6"] }
-
-# Error handling
-anyhow = "1"
+dbus = "0.9.9"
+gtk4 = { version = "0.10.2", default-features = false, features = ["v4_6"] }
+anyhow = "1.0.100"
 
 [profile.release]
 lto = true
