@@ -3,24 +3,47 @@
 A polkit authentication agent for Linux window managers.
 
 - **Fingerprint support** - works with `pam_fprintd` out of the box. The password field only appears when PAM explicitly requests it.
-- **Minimal dependencies** - just GTK and D-Bus. Less code touching your credentials.
+- **Minimal dependencies** - just GTK4 and D-Bus. Less code touching your credentials.
+- Works on Wayland and X11
 
 ## Why do I need a polkit authentication agent?
 
 Polkit handles authorization on Linux. When an app needs elevated privileges, polkit prompts you for your password or fingerprint to verify your identity. GNOME, KDE, and other desktop environments ship their own polkit agents, but if you're running a window manager like sway, i3, or Hyprland, you need to bring your own.
 
+## Requirements
+
+The target system needs:
+
+- **GTK4** - UI toolkit
+- **polkit** - provides `polkit-agent-helper-1` which handles PAM authentication
+
+D-Bus is required but is present on virtually all Linux systems.
+
+| Distro | Package |
+|--------|---------|
+| Fedora | `gtk4 polkit` |
+| Debian/Ubuntu | `libgtk-4-1 policykit-1` |
+| Arch | `gtk4 polkit` |
+
 ## Installation
+
+Download the latest binary from [Releases](https://github.com/jfernandez/badged/releases) and place it in your `$PATH`.
+
+### Building from source
 
 Requires GTK4 and D-Bus development libraries:
 
-- Fedora: `gtk4-devel dbus-devel`
-- Debian/Ubuntu: `libgtk-4-dev libdbus-1-dev`
+| Distro | Packages |
+|--------|----------|
+| Fedora | `gtk4-devel dbus-devel` |
+| Debian/Ubuntu | `libgtk-4-dev libdbus-1-dev` |
+| Arch | `gtk4 dbus` |
 
 ```
 cargo install badged
 ```
 
-Or build from source:
+Or clone and build:
 
 ```
 git clone https://github.com/jfernandez/badged
