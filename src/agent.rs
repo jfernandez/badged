@@ -12,7 +12,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-const HELPER_PATH: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
+const DEFAULT_HELPER_PATH: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
 const AGENT_INTERFACE: &str = "org.freedesktop.PolicyKit1.AuthenticationAgent";
 
 /// Request sent to UI to show auth dialog.
@@ -264,7 +264,13 @@ fn run_helper_session(
 ) -> Result<HelperResult> {
     eprintln!("[agent] Starting helper for user: {username}");
 
-    let mut child = Command::new(HELPER_PATH)
+    // Get the polkit-agent-helper-1 path, respecting POLKIT_AGENT_HELPER_PATH env var
+    let env_path = std::env::var("POLKIT_AGENT_HELPER_PATH");
+    let helper_path = env_path.as_deref().unwrap_or(DEFAULT_HELPER_PATH);
+
+    eprintln!("[agent] Using helper at: {helper_path}");
+
+    let mut child = Command::new(helper_path)
         .arg(username)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
