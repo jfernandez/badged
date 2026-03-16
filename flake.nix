@@ -44,6 +44,51 @@
         };
       };
 
+      devShells.${system}.default = pkgs.mkShell {
+        nativeBuildInputs = with pkgs; [
+          pkg-config
+          cargo
+          rustc
+        ];
+
+        buildInputs = with pkgs; [
+          gtk4
+          dbus
+          glib
+          pango
+          cairo
+          gdk-pixbuf
+          graphene
+          harfbuzz
+        ];
+      };
+
+      nixosModules.default = { config, lib, pkgs, ... }:
+        let
+          cfg = config.services.badged;
+        in
+        {
+          options.services.badged = {
+            enable = lib.mkEnableOption "badged, a polkit authentication agent";
+          };
+
+          config = lib.mkIf cfg.enable {
+            environment.systemPackages = [ self.packages.${pkgs.system}.default ];
+
+            systemd.user.services.badged = {
+              description = "Badged - Polkit Authentication Agent";
+              partOf = [ "graphical-session.target" ];
+              wantedBy = [ "graphical-session.target" ];
+              serviceConfig = {
+                Type = "simple";
+                ExecStart = "${self.packages.${pkgs.system}.default}/bin/badged";
+                Restart = "on-failure";
+                RestartSec = 3;
+              };
+            };
+          };
+        };
+
       overlays.default = final: prev: {
         badged = self.packages.${prev.system}.default;
       };
