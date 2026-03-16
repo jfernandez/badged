@@ -73,7 +73,7 @@
           };
 
           config = lib.mkIf cfg.enable {
-            environment.systemPackages = [ self.packages.${pkgs.system}.default ];
+            environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
 
             systemd.user.services.badged = {
               description = "Badged - Polkit Authentication Agent";
@@ -81,7 +81,7 @@
               wantedBy = [ "graphical-session.target" ];
               serviceConfig = {
                 Type = "simple";
-                ExecStart = "${self.packages.${pkgs.system}.default}/bin/badged";
+                ExecStart = "${self.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/badged";
                 Restart = "on-failure";
                 RestartSec = 3;
               };
