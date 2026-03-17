@@ -13,7 +13,7 @@
 
 rustPlatform.buildRustPackage {
   pname = "badged";
-  version = "0.2.0";
+  version = (lib.importTOML ../Cargo.toml).package.version;
 
   src = lib.cleanSource ./..;
 
