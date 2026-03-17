@@ -1,11 +1,11 @@
 //! Polkit agent listener — GObject subclass of PolkitAgentListener.
 //!
 //! Uses glib 0.20 (matching polkit-agent-rs) for GObject subclassing.
-//! Communicates with the GTK4 UI via mpsc channels and Arc<SharedState>.
+//! Communicates with the GTK4 UI via mpsc channels and Rc<SharedState>.
 
 use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, Weak};
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
@@ -60,14 +60,14 @@ struct SharedInner {
 /// State shared between listener and UI for session control.
 pub struct SharedState {
     event_tx: mpsc::Sender<UiEvent>,
-    inner: Mutex<SharedInner>,
+    inner: RefCell<SharedInner>,
 }
 
 impl SharedState {
-    pub fn new(event_tx: mpsc::Sender<UiEvent>) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new(event_tx: mpsc::Sender<UiEvent>) -> Rc<Self> {
+        Rc::new(Self {
             event_tx,
-            inner: Mutex::new(SharedInner {
+            inner: RefCell::new(SharedInner {
                 next_request_id: 1,
                 active: None,
             }),
@@ -75,7 +75,7 @@ impl SharedState {
     }
 
     pub fn start_request(
-        self: &Arc<Self>,
+        self: &Rc<Self>,
         message: &str,
         cookie: &str,
         identities: Vec<polkit::Identity>,
@@ -109,7 +109,7 @@ impl SharedState {
         let session = Session::new(&choices[0].identity, cookie);
 
         let (request_id, attempt_id, previous) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.borrow_mut();
             let request_id = inner.next_request_id;
             inner.next_request_id += 1;
 
@@ -148,7 +148,7 @@ impl SharedState {
 
     pub fn respond(&self, request_id: u64, password: &str) -> bool {
         let session = {
-            let inner = self.inner.lock().unwrap();
+            let inner = self.inner.borrow_mut();
             inner
                 .active
                 .as_ref()
@@ -166,7 +166,7 @@ impl SharedState {
 
     pub fn cancel_request(&self, request_id: u64) -> bool {
         let active = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.borrow_mut();
             match inner.active.as_ref() {
                 Some(active) if active.request_id == request_id => inner.active.take(),
                 _ => None,
@@ -181,9 +181,9 @@ impl SharedState {
         }
     }
 
-    pub fn select_user(self: &Arc<Self>, request_id: u64, user_index: usize) -> bool {
+    pub fn select_user(self: &Rc<Self>, request_id: u64, user_index: usize) -> bool {
         let (session_to_cancel, session_to_start, attempt_id) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.borrow_mut();
             let active = match inner.active.as_mut() {
                 Some(active) if active.request_id == request_id => active,
                 _ => return false,
@@ -209,9 +209,9 @@ impl SharedState {
         true
     }
 
-    fn attach_session(self: &Arc<Self>, request_id: u64, attempt_id: u64, session: &Session) {
+    fn attach_session(self: &Rc<Self>, request_id: u64, attempt_id: u64, session: &Session) {
         let tx = self.event_tx.clone();
-        let weak = Arc::downgrade(self);
+        let weak = Rc::downgrade(self);
         session.connect_request(move |_sess, _prompt, _echo_on| {
             if is_active_attempt(&weak, request_id, attempt_id) {
                 let _ = tx.send(UiEvent::PasswordNeeded);
@@ -219,7 +219,7 @@ impl SharedState {
         });
 
         let tx = self.event_tx.clone();
-        let weak = Arc::downgrade(self);
+        let weak = Rc::downgrade(self);
         session.connect_show_info(move |_sess, text| {
             if is_active_attempt(&weak, request_id, attempt_id) {
                 let _ = tx.send(UiEvent::PamInfo(text.to_owned()));
@@ -227,14 +227,14 @@ impl SharedState {
         });
 
         let tx = self.event_tx.clone();
-        let weak = Arc::downgrade(self);
+        let weak = Rc::downgrade(self);
         session.connect_show_error(move |_sess, text| {
             if is_active_attempt(&weak, request_id, attempt_id) {
                 let _ = tx.send(UiEvent::PamError(text.to_owned()));
             }
         });
 
-        let weak = Arc::downgrade(self);
+        let weak = Rc::downgrade(self);
         session.connect_completed(move |_sess, gained_auth| {
             if let Some(shared) = weak.upgrade() {
                 shared.finish_from_session(request_id, attempt_id, gained_auth);
@@ -244,7 +244,7 @@ impl SharedState {
 
     fn finish_from_session(&self, request_id: u64, attempt_id: u64, gained_auth: bool) {
         let active = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.borrow_mut();
             match inner.active.as_ref() {
                 Some(active)
                     if active.request_id == request_id && active.attempt_id == attempt_id =>
@@ -281,7 +281,7 @@ fn is_active_attempt(weak: &Weak<SharedState>, request_id: u64, attempt_id: u64)
         return false;
     };
 
-    let inner = shared.inner.lock().unwrap();
+    let inner = shared.inner.borrow();
     matches!(
         inner.active.as_ref(),
         Some(active) if active.request_id == request_id && active.attempt_id == attempt_id
@@ -300,7 +300,7 @@ fn cancelled_error() -> glib::Error {
 
 #[derive(Default)]
 pub struct BadgedListenerPriv {
-    shared: RefCell<Option<Arc<SharedState>>>,
+    shared: RefCell<Option<Rc<SharedState>>>,
 }
 
 #[glib::object_subclass]
@@ -356,7 +356,7 @@ glib::wrapper! {
 }
 
 impl BadgedListener {
-    pub fn new(shared: Arc<SharedState>) -> Self {
+    pub fn new(shared: Rc<SharedState>) -> Self {
         let obj: Self = glib::Object::new();
         *obj.imp().shared.borrow_mut() = Some(shared);
         obj

@@ -3,7 +3,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::sync::Arc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -12,7 +11,7 @@ use crate::listener::{SharedState, UiEvent};
 
 pub struct UiChannels {
     pub event_rx: mpsc::Receiver<UiEvent>,
-    pub shared: Arc<SharedState>,
+    pub shared: Rc<SharedState>,
 }
 
 const CSS: &str = r#"
@@ -280,7 +279,7 @@ fn setup_ui(window: gtk4::Window, widgets: Widgets, channels: UiChannels) {
     let password_box_c = password_box.clone();
     let password_entry_c = password_entry.clone();
     let auth_button_c = auth_button.clone();
-    let shared_events = Arc::clone(&shared);
+    let shared_events = Rc::clone(&shared);
     let users_c = users.clone();
     let initializing_c = initializing.clone();
     let current_request_id_c = current_request_id.clone();
