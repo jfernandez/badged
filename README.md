@@ -3,7 +3,7 @@
 A polkit authentication agent for Linux window managers.
 
 - **Fingerprint support** - works with `pam_fprintd` out of the box. The password field only appears when PAM explicitly requests it.
-- **Minimal dependencies** - just GTK4 and D-Bus. Less code touching your credentials.
+- **Minimal dependencies** - just GTK4 and polkit. Less code touching your credentials.
 - Works on Wayland and X11
 
 ## Why do I need a polkit authentication agent?
@@ -15,9 +15,7 @@ Polkit handles authorization on Linux. When an app needs elevated privileges, po
 The target system needs:
 
 - **GTK4** - UI toolkit
-- **polkit** - provides `polkit-agent-helper-1` which handles PAM authentication
-
-D-Bus is required but is present on virtually all Linux systems.
+- **polkit** - provides `libpolkit-agent-1` and `polkit-agent-helper-1`
 
 | Distro | Package |
 |--------|---------|
@@ -29,15 +27,37 @@ D-Bus is required but is present on virtually all Linux systems.
 
 Download the latest binary from [Releases](https://github.com/jfernandez/badged/releases) and place it in your `$PATH`.
 
+### NixOS / Home Manager
+
+Add badged as a flake input:
+
+```nix
+# flake.nix
+inputs.badged = {
+  url = "github:jfernandez/badged";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+Then import the home-manager module and enable the service:
+
+```nix
+# home-manager config
+imports = [ inputs.badged.homeManagerModules.default ];
+services.badged.enable = true;
+```
+
+This creates a systemd user service that starts badged with your Wayland session.
+
 ### Building from source
 
-Requires GTK4 and D-Bus development libraries:
+Requires GTK4 and polkit development libraries:
 
 | Distro | Packages |
 |--------|----------|
-| Fedora | `gtk4-devel dbus-devel` |
-| Debian/Ubuntu | `libgtk-4-dev libdbus-1-dev` |
-| Arch | `gtk4 dbus` |
+| Fedora | `gtk4-devel polkit-devel` |
+| Debian/Ubuntu | `libgtk-4-dev libpolkit-agent-1-dev` |
+| Arch | `gtk4 polkit` |
 
 ```
 cargo install badged
@@ -53,7 +73,7 @@ cargo install --path .
 
 ## Usage
 
-Run `badged` when your session starts. It registers with polkit over D-Bus and waits for authentication requests.
+Run `badged` when your session starts. It registers with polkit and waits for authentication requests.
 
 For Hyprland, add to `~/.config/hypr/hyprland.conf` (or `autostart.conf` if you split your config):
 
@@ -63,4 +83,4 @@ exec-once = badged
 
 ## How it works
 
-When an application requests elevated privileges, polkit looks for a registered authentication agent and calls its `BeginAuthentication` method over D-Bus. badged shows a dialog, spawns the standard `polkit-agent-helper-1` binary (provided by your distro), and relays credentials through it. The helper handles all PAM interaction, so badged never runs as root and never handles passwords directly. It just pipes them to the helper's stdin.
+When an application requests elevated privileges, polkit looks for a registered authentication agent. badged uses `libpolkit-agent-1` to register a listener and create PAM sessions. The library spawns `polkit-agent-helper-1` in-process, which handles all PAM interaction — including fingerprint prompts via `pam_fprintd`. badged never runs as root and never handles passwords directly; it passes them to the PAM session which relays them to the helper.
