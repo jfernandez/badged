@@ -28,8 +28,12 @@ pub enum UiEvent {
     PamInfo(String),
     PamError(String),
     PasswordNeeded,
-    AuthComplete { success: bool },
-    PolkitCancelled { request_id: u64 },
+    AuthComplete {
+        success: bool,
+    },
+    PolkitCancelled {
+        request_id: u64,
+    },
 }
 
 #[derive(Clone)]
@@ -257,9 +261,9 @@ impl SharedState {
             } else {
                 unsafe { active.task.return_result(Err(auth_failed_error())) };
             }
-            let _ = self
-                .event_tx
-                .send(UiEvent::AuthComplete { success: gained_auth });
+            let _ = self.event_tx.send(UiEvent::AuthComplete {
+                success: gained_auth,
+            });
         }
     }
 
@@ -336,10 +340,7 @@ impl ListenerImpl for BadgedListenerPriv {
         }
     }
 
-    fn initiate_authentication_finish(
-        &self,
-        result: Result<gio::Task<bool>, glib::Error>,
-    ) -> bool {
+    fn initiate_authentication_finish(&self, result: Result<gio::Task<bool>, glib::Error>) -> bool {
         match result {
             Ok(task) => unsafe { task.propagate() }.unwrap_or(false),
             Err(_) => false,
@@ -363,9 +364,7 @@ impl BadgedListener {
 
     /// Register as a polkit agent for the current process's session.
     /// Returns a handle that unregisters on drop — keep it alive for the process lifetime.
-    pub fn register_for_current_session(
-        &self,
-    ) -> Result<impl Drop, glib::Error> {
+    pub fn register_for_current_session(&self) -> Result<impl Drop, glib::Error> {
         let subject = polkit::UnixSession::new_for_process_sync(
             std::process::id() as i32,
             None::<&gio::Cancellable>,
