@@ -1,29 +1,18 @@
-//! Minimal GTK4 UI for the polkit authentication agent.
+//! GTK4 authentication dialog UI.
 
-use gtk4::glib;
-use gtk4::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::sync::Arc;
 
-use crate::agent::{
-    AuthComplete, AuthRequest, CancelRequest, PamMessage, PasswordNeeded, PasswordResponse,
-    ShutdownRequest, UserCancel, UserChange,
-};
+use gtk4::glib;
+use gtk4::prelude::*;
 
-/// Channels for UI communication with agent.
+use crate::listener::{SharedState, UiEvent};
+
 pub struct UiChannels {
-    // From agent
-    pub request_rx: mpsc::Receiver<AuthRequest>,
-    pub cancel_rx: mpsc::Receiver<CancelRequest>,
-    pub pam_msg_rx: mpsc::Receiver<PamMessage>,
-    pub password_needed_rx: mpsc::Receiver<PasswordNeeded>,
-    pub auth_complete_rx: mpsc::Receiver<AuthComplete>,
-    // To agent
-    pub password_tx: mpsc::Sender<PasswordResponse>,
-    pub user_change_tx: mpsc::Sender<UserChange>,
-    pub user_cancel_tx: mpsc::Sender<UserCancel>,
-    pub shutdown_tx: mpsc::Sender<ShutdownRequest>,
+    pub event_rx: mpsc::Receiver<UiEvent>,
+    pub shared: Arc<SharedState>,
 }
 
 const CSS: &str = r#"
@@ -70,33 +59,35 @@ const CSS: &str = r#"
 }
 "#;
 
-/// Run the GTK4 UI event loop.
+/// Run the GTK4 UI event loop (blocking).
 pub fn run(channels: UiChannels) {
     let app = gtk4::Application::builder()
-        .application_id("org.freedesktop.PolicyKit1.AuthenticationAgent")
+        .application_id("org.freedesktop.badged.Agent")
+        .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
 
-    let channels = Rc::new(RefCell::new(Some(channels)));
+    let channels = Rc::new(std::cell::RefCell::new(Some(channels)));
 
-    app.connect_startup(|_| {
+    let app_clone = app.clone();
+    app.connect_startup(move |_| {
         load_css();
+        app_clone.activate();
     });
 
     app.connect_activate(move |app| {
         let (window, widgets) = build_window(app);
-
         if let Some(ch) = channels.borrow_mut().take() {
-            setup_channels(window, widgets, ch);
+            setup_ui(window, widgets, ch);
         }
     });
 
+    let _hold = app.hold();
     app.run_with_args::<&str>(&[]);
 }
 
 fn load_css() {
     let provider = gtk4::CssProvider::new();
     provider.load_from_data(CSS);
-
     gtk4::style_context_add_provider_for_display(
         &gtk4::gdk::Display::default().expect("Could not get default display"),
         &provider,
@@ -109,8 +100,8 @@ struct Widgets {
     fingerprint_label: gtk4::Label,
     fingerprint_status: gtk4::Label,
     separator_label: gtk4::Label,
-    user_dropdown: gtk4::DropDown,
     user_box: gtk4::Box,
+    user_dropdown: gtk4::DropDown,
     password_box: gtk4::Box,
     password_entry: gtk4::PasswordEntry,
     cancel_button: gtk4::Button,
@@ -135,14 +126,12 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
         .margin_end(24)
         .build();
 
-    // Header
     let header_label = gtk4::Label::builder()
         .label("Authentication Required")
         .halign(gtk4::Align::Center)
         .build();
     header_label.add_css_class("auth-header");
 
-    // Action message
     let message_label = gtk4::Label::builder()
         .label("")
         .wrap(true)
@@ -150,21 +139,18 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
         .build();
     message_label.add_css_class("auth-message");
 
-    // Fingerprint area frame
     let fingerprint_frame = gtk4::Box::builder()
         .orientation(gtk4::Orientation::Vertical)
         .halign(gtk4::Align::Center)
         .build();
     fingerprint_frame.add_css_class("fingerprint-frame");
 
-    // Fingerprint emoji as icon (works everywhere)
     let fingerprint_label = gtk4::Label::builder()
         .label("🔐")
         .halign(gtk4::Align::Center)
         .build();
     fingerprint_label.add_css_class("fingerprint-label");
 
-    // Fingerprint status label
     let fingerprint_status = gtk4::Label::builder()
         .label("Waiting for authentication...")
         .wrap(true)
@@ -175,7 +161,6 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
     fingerprint_frame.append(&fingerprint_label);
     fingerprint_frame.append(&fingerprint_status);
 
-    // Separator (hidden until password is needed)
     let separator_label = gtk4::Label::builder()
         .label("— or enter password —")
         .halign(gtk4::Align::Center)
@@ -183,7 +168,6 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
         .build();
     separator_label.add_css_class("separator-label");
 
-    // User selection (hidden if only one user)
     let user_box = gtk4::Box::builder()
         .orientation(gtk4::Orientation::Horizontal)
         .spacing(12)
@@ -202,7 +186,6 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
     user_box.append(&user_label);
     user_box.append(&user_dropdown);
 
-    // Password entry (hidden until password is needed)
     let password_box = gtk4::Box::builder()
         .orientation(gtk4::Orientation::Horizontal)
         .spacing(12)
@@ -226,7 +209,6 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
     password_box.append(&password_label);
     password_box.append(&password_entry);
 
-    // Buttons
     let button_box = gtk4::Box::builder()
         .orientation(gtk4::Orientation::Horizontal)
         .spacing(8)
@@ -235,7 +217,6 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
         .build();
 
     let cancel_button = gtk4::Button::with_label("Cancel");
-
     let auth_button = gtk4::Button::with_label("Authenticate");
     auth_button.add_css_class("suggested-action");
     auth_button.set_sensitive(false);
@@ -243,7 +224,6 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
     button_box.append(&cancel_button);
     button_box.append(&auth_button);
 
-    // Assemble
     main_box.append(&header_label);
     main_box.append(&message_label);
     main_box.append(&fingerprint_frame);
@@ -259,8 +239,8 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
         fingerprint_label,
         fingerprint_status,
         separator_label,
-        user_dropdown,
         user_box,
+        user_dropdown,
         password_box,
         password_entry,
         cancel_button,
@@ -270,248 +250,209 @@ fn build_window(app: &gtk4::Application) -> (gtk4::Window, Widgets) {
     (window, widgets)
 }
 
-fn setup_channels(window: gtk4::Window, widgets: Widgets, channels: UiChannels) {
+fn setup_ui(window: gtk4::Window, widgets: Widgets, channels: UiChannels) {
+    let UiChannels { event_rx, shared } = channels;
     let users: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let initializing: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
-
-    let UiChannels {
-        request_rx,
-        cancel_rx,
-        pam_msg_rx,
-        password_needed_rx,
-        auth_complete_rx,
-        password_tx,
-        user_change_tx,
-        user_cancel_tx,
-        shutdown_tx,
-    } = channels;
+    let current_request_id: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
 
     let Widgets {
         message_label,
         fingerprint_label,
         fingerprint_status,
         separator_label,
-        user_dropdown,
         user_box,
+        user_dropdown,
         password_box,
         password_entry,
         cancel_button,
         auth_button,
     } = widgets;
 
-    let password_tx = Rc::new(password_tx);
-    let user_change_tx = Rc::new(user_change_tx);
-
-    // Poll for auth requests - show dialog
-    let window_clone = window.clone();
-    let users_clone = users.clone();
-    let initializing_clone = initializing.clone();
-    let message_label_clone = message_label.clone();
-    let fingerprint_label_clone = fingerprint_label.clone();
-    let fingerprint_status_clone = fingerprint_status.clone();
-    let separator_label_clone = separator_label.clone();
-    let user_dropdown_clone = user_dropdown.clone();
-    let user_box_clone = user_box.clone();
-    let password_box_clone = password_box.clone();
-    let password_entry_clone = password_entry.clone();
-    let auth_button_clone = auth_button.clone();
+    // Poll listener events every 50ms.
+    let window_c = window.clone();
+    let message_label_c = message_label.clone();
+    let fingerprint_label_c = fingerprint_label.clone();
+    let fingerprint_status_c = fingerprint_status.clone();
+    let separator_label_c = separator_label.clone();
+    let user_box_c = user_box.clone();
+    let user_dropdown_c = user_dropdown.clone();
+    let password_box_c = password_box.clone();
+    let password_entry_c = password_entry.clone();
+    let auth_button_c = auth_button.clone();
+    let shared_events = Arc::clone(&shared);
+    let users_c = users.clone();
+    let initializing_c = initializing.clone();
+    let current_request_id_c = current_request_id.clone();
 
     glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-        if let Ok(request) = request_rx.try_recv() {
-            // Block dropdown change signal during setup
-            *initializing_clone.borrow_mut() = true;
-
-            *users_clone.borrow_mut() = request.users.clone();
-
-            message_label_clone.set_label(&request.message);
-
-            // Reset fingerprint state
-            fingerprint_label_clone.set_label("🔐");
-            fingerprint_status_clone.set_label("Waiting for authentication...");
-            fingerprint_status_clone.remove_css_class("error");
-            fingerprint_status_clone.remove_css_class("success");
-
-            // Setup user dropdown
-            let user_strs: Vec<&str> = request.users.iter().map(|s| s.as_str()).collect();
-            let model = gtk4::StringList::new(&user_strs);
-            user_dropdown_clone.set_model(Some(&model));
-            user_dropdown_clone.set_selected(0);
-
-            // Hide user selection if only one user
-            user_box_clone.set_visible(request.users.len() > 1);
-
-            // Hide password section until PAM asks for it
-            separator_label_clone.set_visible(false);
-            password_box_clone.set_visible(false);
-            password_entry_clone.set_text("");
-            password_entry_clone.set_sensitive(false);
-            auth_button_clone.set_sensitive(false);
-
-            *initializing_clone.borrow_mut() = false;
-
-            window_clone.present();
-        }
-        glib::ControlFlow::Continue
-    });
-
-    // Poll for PAM info/error messages
-    let fingerprint_status_clone = fingerprint_status.clone();
-    let fingerprint_label_clone = fingerprint_label.clone();
-    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-        if let Ok(pam_msg) = pam_msg_rx.try_recv() {
-            fingerprint_status_clone.set_label(&pam_msg.text);
-
-            if pam_msg.is_error {
-                fingerprint_status_clone.add_css_class("error");
-                fingerprint_status_clone.remove_css_class("success");
-                fingerprint_label_clone.set_label("❌");
-            } else {
-                fingerprint_status_clone.remove_css_class("error");
-                // Check for success indicators in message
-                let text_lower = pam_msg.text.to_lowercase();
-                if text_lower.contains("success") || text_lower.contains("verified") {
-                    fingerprint_status_clone.add_css_class("success");
-                    fingerprint_label_clone.set_label("✅");
-                } else {
-                    fingerprint_label_clone.set_label("👆");
+        while let Ok(event) = event_rx.try_recv() {
+            match event {
+                UiEvent::ShowDialog {
+                    request_id,
+                    message,
+                    users,
+                } => {
+                    eprintln!("[ui] ShowDialog: {message}");
+                    *current_request_id_c.borrow_mut() = Some(request_id);
+                    *initializing_c.borrow_mut() = true;
+                    *users_c.borrow_mut() = users.clone();
+                    message_label_c.set_label(&message);
+                    fingerprint_label_c.set_label("🔐");
+                    fingerprint_status_c.set_label("Waiting for authentication...");
+                    fingerprint_status_c.remove_css_class("error");
+                    fingerprint_status_c.remove_css_class("success");
+                    let user_refs: Vec<&str> = users.iter().map(|user| user.as_str()).collect();
+                    let user_model = gtk4::StringList::new(&user_refs);
+                    user_dropdown_c.set_model(Some(&user_model));
+                    user_dropdown_c.set_selected(0);
+                    separator_label_c.set_visible(false);
+                    password_box_c.set_visible(false);
+                    password_entry_c.set_text("");
+                    password_entry_c.set_sensitive(false);
+                    auth_button_c.set_sensitive(false);
+                    user_box_c.set_visible(users.len() > 1);
+                    *initializing_c.borrow_mut() = false;
+                    window_c.present();
+                }
+                UiEvent::PamInfo(text) => {
+                    eprintln!("[ui] PamInfo: {text}");
+                    fingerprint_status_c.set_label(&text);
+                    fingerprint_label_c.set_label("👆");
+                    fingerprint_status_c.remove_css_class("error");
+                    fingerprint_status_c.remove_css_class("success");
+                }
+                UiEvent::PamError(text) => {
+                    eprintln!("[ui] PamError: {text}");
+                    fingerprint_status_c.set_label(&text);
+                    fingerprint_label_c.set_label("❌");
+                    fingerprint_status_c.add_css_class("error");
+                    fingerprint_status_c.remove_css_class("success");
+                }
+                UiEvent::PasswordNeeded => {
+                    eprintln!("[ui] PasswordNeeded");
+                    separator_label_c.set_visible(true);
+                    password_box_c.set_visible(true);
+                    password_entry_c.set_sensitive(true);
+                    password_entry_c.grab_focus();
+                    auth_button_c.set_sensitive(true);
+                }
+                UiEvent::AuthComplete { success } => {
+                    eprintln!("[ui] AuthComplete: {success}");
+                    password_entry_c.set_text("");
+                    password_entry_c.set_sensitive(false);
+                    auth_button_c.set_sensitive(false);
+                    if success {
+                        fingerprint_label_c.set_label("✅");
+                        fingerprint_status_c.set_label("Authentication successful");
+                        fingerprint_status_c.add_css_class("success");
+                        let win = window_c.clone();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(300),
+                            move || win.set_visible(false),
+                        );
+                    } else {
+                        window_c.set_visible(false);
+                    }
+                    *current_request_id_c.borrow_mut() = None;
+                }
+                UiEvent::PolkitCancelled { request_id } => {
+                    if Some(request_id) == *current_request_id_c.borrow()
+                        && shared_events.cancel_request(request_id)
+                    {
+                        password_entry_c.set_text("");
+                        password_entry_c.set_sensitive(false);
+                        auth_button_c.set_sensitive(false);
+                        *current_request_id_c.borrow_mut() = None;
+                        gtk4::prelude::GtkWindowExt::set_focus(&window_c, gtk4::Widget::NONE);
+                        window_c.set_visible(false);
+                    }
                 }
             }
         }
         glib::ControlFlow::Continue
     });
 
-    // Poll for password needed signal - show and enable password entry
-    let separator_label_clone = separator_label.clone();
-    let password_box_clone = password_box.clone();
-    let password_entry_clone = password_entry.clone();
-    let auth_button_clone = auth_button.clone();
-    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-        if password_needed_rx.try_recv().is_ok() {
-            separator_label_clone.set_visible(true);
-            password_box_clone.set_visible(true);
-            password_entry_clone.set_sensitive(true);
-            password_entry_clone.grab_focus();
-            auth_button_clone.set_sensitive(true);
-        }
-        glib::ControlFlow::Continue
-    });
+    // Authenticate button — submit password to the current PAM session.
+    {
+        let shared_c = shared.clone();
+        let current_request_id_c = current_request_id.clone();
+        let password_entry_c = password_entry.clone();
+        let fingerprint_status_c = fingerprint_status.clone();
+        auth_button.connect_clicked(move |btn| {
+            let Some(request_id) = *current_request_id_c.borrow() else {
+                return;
+            };
+            let password = password_entry_c.text().to_string();
+            if shared_c.respond(request_id, &password) {
+                password_entry_c.set_sensitive(false);
+                btn.set_sensitive(false);
+                fingerprint_status_c.set_label("Authenticating...");
+            }
+        });
+    }
 
-    // Poll for auth complete - hide dialog
-    let window_clone = window.clone();
-    let password_entry_clone = password_entry.clone();
-    let fingerprint_status_clone = fingerprint_status.clone();
-    let fingerprint_label_clone = fingerprint_label.clone();
-    let auth_button_clone = auth_button.clone();
-    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-        if let Ok(complete) = auth_complete_rx.try_recv() {
-            if complete.success {
-                fingerprint_label_clone.set_label("✅");
-                fingerprint_status_clone.set_label("Authentication successful");
-                fingerprint_status_clone.add_css_class("success");
+    // Enter key on password field triggers auth button.
+    {
+        let auth_button_c = auth_button.clone();
+        password_entry.connect_activate(move |_| {
+            if auth_button_c.is_sensitive() {
+                auth_button_c.emit_clicked();
+            }
+        });
+    }
+
+    // Cancel button — cancel the current PAM session.
+    {
+        let shared_c = shared.clone();
+        let current_request_id_c = current_request_id.clone();
+        let window_c = window.clone();
+        cancel_button.connect_clicked(move |_| {
+            if let Some(request_id) = *current_request_id_c.borrow() {
+                let _ = shared_c.cancel_request(request_id);
+                *current_request_id_c.borrow_mut() = None;
+            }
+            gtk4::prelude::GtkWindowExt::set_focus(&window_c, gtk4::Widget::NONE);
+            window_c.set_visible(false);
+        });
+    }
+
+    // Switching the selected user restarts the session for that identity.
+    {
+        let shared_c = shared.clone();
+        let users_c = users;
+        let initializing_c = initializing;
+        let current_request_id_c = current_request_id;
+        let separator_label_c = separator_label.clone();
+        let password_box_c = password_box.clone();
+        let password_entry_c = password_entry.clone();
+        let auth_button_c = auth_button.clone();
+        let fingerprint_status_c = fingerprint_status.clone();
+        let fingerprint_label_c = fingerprint_label.clone();
+        user_dropdown.connect_selected_notify(move |dropdown| {
+            if *initializing_c.borrow() {
+                return;
             }
 
-            password_entry_clone.set_text("");
-            password_entry_clone.set_sensitive(false);
-            auth_button_clone.set_sensitive(false);
+            let Some(request_id) = *current_request_id_c.borrow() else {
+                return;
+            };
+            let selected = dropdown.selected() as usize;
+            if selected >= users_c.borrow().len() {
+                return;
+            }
 
-            // Small delay before hiding for visual feedback
-            let window_to_hide = window_clone.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
-                gtk4::prelude::GtkWindowExt::set_focus(&window_to_hide, gtk4::Widget::NONE);
-                window_to_hide.set_visible(false);
-            });
-        }
-        glib::ControlFlow::Continue
-    });
-
-    // Poll for cancel requests
-    let window_clone = window.clone();
-    let password_entry_clone = password_entry.clone();
-    let fingerprint_status_clone = fingerprint_status.clone();
-    let auth_button_clone = auth_button.clone();
-    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-        if cancel_rx.try_recv().is_ok() {
-            password_entry_clone.set_text("");
-            password_entry_clone.set_sensitive(false);
-            auth_button_clone.set_sensitive(false);
-            fingerprint_status_clone.set_label("");
-            gtk4::prelude::GtkWindowExt::set_focus(&window_clone, gtk4::Widget::NONE);
-            window_clone.set_visible(false);
-        }
-        glib::ControlFlow::Continue
-    });
-
-    // User dropdown change - notify agent to restart helper
-    let users_clone = users.clone();
-    let initializing_clone = initializing.clone();
-    let user_change_tx_clone = user_change_tx.clone();
-    let separator_label_clone = separator_label.clone();
-    let password_box_clone = password_box.clone();
-    let password_entry_clone = password_entry.clone();
-    let auth_button_clone = auth_button.clone();
-    let fingerprint_status_clone = fingerprint_status.clone();
-    let fingerprint_label_clone = fingerprint_label.clone();
-    user_dropdown.connect_selected_notify(move |dropdown| {
-        // Ignore changes during initial setup
-        if *initializing_clone.borrow() {
-            return;
-        }
-
-        let users_list = users_clone.borrow();
-        let selected = dropdown.selected() as usize;
-        if let Some(username) = users_list.get(selected) {
-            // Reset UI state since we're restarting auth
-            separator_label_clone.set_visible(false);
-            password_box_clone.set_visible(false);
-            password_entry_clone.set_text("");
-            password_entry_clone.set_sensitive(false);
-            auth_button_clone.set_sensitive(false);
-            fingerprint_status_clone.set_label("Waiting for authentication...");
-            fingerprint_label_clone.set_label("🔐");
-            fingerprint_status_clone.remove_css_class("success");
-            fingerprint_status_clone.remove_css_class("error");
-
-            let _ = user_change_tx_clone.send(UserChange {
-                username: username.clone(),
-            });
-        }
-    });
-
-    // Cancel button - notify agent and hide dialog
-    let window_clone = window.clone();
-    let user_cancel_tx = Rc::new(user_cancel_tx);
-    let user_cancel_tx_clone = user_cancel_tx.clone();
-    cancel_button.connect_clicked(move |_| {
-        let _ = user_cancel_tx_clone.send(UserCancel);
-        gtk4::prelude::GtkWindowExt::set_focus(&window_clone, gtk4::Widget::NONE);
-        window_clone.set_visible(false);
-    });
-
-    // Auth button - send password
-    let password_tx_clone = password_tx.clone();
-    let password_entry_clone = password_entry.clone();
-    let auth_button_clone = auth_button.clone();
-    let fingerprint_status_clone = fingerprint_status.clone();
-    auth_button.connect_clicked(move |_| {
-        let password = password_entry_clone.text().to_string();
-        let _ = password_tx_clone.send(PasswordResponse { password });
-
-        // Disable while authenticating
-        password_entry_clone.set_sensitive(false);
-        auth_button_clone.set_sensitive(false);
-        fingerprint_status_clone.set_label("Authenticating...");
-    });
-
-    // Enter key triggers auth
-    let auth_button_clone = auth_button.clone();
-    password_entry.connect_activate(move |_| {
-        if auth_button_clone.is_sensitive() {
-            auth_button_clone.emit_clicked();
-        }
-    });
-
-    // Shutdown handler
-    window.application().unwrap().connect_shutdown(move |_| {
-        let _ = shutdown_tx.send(ShutdownRequest);
-    });
+            if shared_c.select_user(request_id, selected) {
+                separator_label_c.set_visible(false);
+                password_box_c.set_visible(false);
+                password_entry_c.set_text("");
+                password_entry_c.set_sensitive(false);
+                auth_button_c.set_sensitive(false);
+                fingerprint_status_c.set_label("Waiting for authentication...");
+                fingerprint_label_c.set_label("🔐");
+                fingerprint_status_c.remove_css_class("success");
+                fingerprint_status_c.remove_css_class("error");
+            }
+        });
+    }
 }

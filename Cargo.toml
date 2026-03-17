@@ -13,9 +13,10 @@ keywords = ["polkit", "authentication", "gtk4", "fingerprint", "linux"]
 categories = ["authentication", "gui"]
 
 [dependencies]
-dbus = "0.9.9"
 gtk4 = { version = "0.10.2", default-features = false, features = ["v4_6"] }
-anyhow = "1.0.100"
+polkit-agent-rs = "0.3.0"
+# glib 0.20 — must match polkit-agent-rs for GObject subclassing in listener.rs
+glib = "0.20"
 
 [profile.release]
 lto = true
