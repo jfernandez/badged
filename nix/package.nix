@@ -17,7 +17,11 @@ rustPlatform.buildRustPackage {
 
   src = lib.cleanSource ./..;
 
-  cargoLock.lockFile = ../Cargo.lock;
+  # cargoHash (-> fetchCargoVendor, static.crates.io) rather than
+  # cargoLock.lockFile (-> importCargoLock, crates.io/api), because the API
+  # now 403s nix's `curl/...` User-Agent so importCargoLock can't fetch crates.
+  # Regenerate with lib.fakeHash if Cargo.lock changes.
+  cargoHash = "sha256-Fu/wdsLtzWnvy9GgOgdSe6afnBDbmZb//IwS/8XHLek=";
 
   nativeBuildInputs = [
     pkg-config
